@@ -1,0 +1,29 @@
+# Virtual environments
+venv/
+venv_*/
+__pycache__/
+*.pyc
+*.pyo
+
+# Model files (large)
+weights/
+*.pth
+*.pt
+
+# Data files
+data/
+test_videos/
+*.mp4
+*.avi
+*.mov
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/

@@ -5,17 +5,26 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Model files (large)
-weights/
-*.pth
+# Model files (large) - but keep the trained model
+# weights/  # Keep weights folder with trained models
 *.pt
+yolov8n-pose.pt
+yolov8n.pt
 
-# Data files
+# Data files and cache
 data/
+dataset/
 test_videos/
+# testing/ - Keep this folder, just ignore videos inside
+# training/ - Keep this folder, just ignore videos inside
+cache_finetune_train/
+cache_finetune_val/
+Output/
+evaluation_results/
 *.mp4
 *.avi
 *.mov
+*.npy
 
 # IDE
 .vscode/
@@ -24,6 +33,10 @@ test_videos/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Analysis files
+threshold_analysis.json

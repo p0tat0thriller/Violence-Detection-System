@@ -18,16 +18,10 @@ from collections import deque
 import sys
 import os
 import traceback
-import importlib.util
 from ultralytics import YOLO
 
-# Import SkeletonViolenceModel from model-akshit.py
-script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(script_dir, "model-akshit.py")
-spec = importlib.util.spec_from_file_location("model_akshit", model_path)
-model_akshit = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(model_akshit)
-SkeletonViolenceModel = model_akshit.SkeletonViolenceModel
+# Import SkeletonViolenceModel
+from skeleton_model import SkeletonViolenceModel
 
 # Import skeleton extractor
 from skeleton_extractor import SkeletonExtractor

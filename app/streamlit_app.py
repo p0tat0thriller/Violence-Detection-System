@@ -16,19 +16,13 @@ from collections import deque
 import tempfile
 import os
 from pathlib import Path
-import importlib.util
 
 # Import required modules
 from skeleton_extractor import SkeletonExtractor
 from ultralytics import YOLO
 
 # Import SkeletonViolenceModel
-script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(script_dir, "model-akshit.py")
-spec = importlib.util.spec_from_file_location("model_akshit", model_path)
-model_akshit = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(model_akshit)
-SkeletonViolenceModel = model_akshit.SkeletonViolenceModel
+from skeleton_model import SkeletonViolenceModel
 
 # Page configuration
 st.set_page_config(

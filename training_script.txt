@@ -1,0 +1,839 @@
+cell 1
+# Install required packages
+import sys
+
+# Check Python version
+print(f"🐍 Python version: {sys.version}")
+python_version = sys.version_info
+
+# Since MediaPipe doesn't work with Python 3.11+, we'll use YOLOv8-Pose instead
+if python_version.major == 3 and python_version.minor >= 11:
+    print("✅ Using Python 3.11+ - Installing YOLOv8-Pose")
+    !pip install ultralytics --quiet  # YOLOv8 with pose estimation
+else:
+    print("✅ Using Python 3.10 or earlier - Installing MediaPipe")
+    !pip install mediapipe --quiet
+
+# Install other packages
+!pip install opencv-python-headless --quiet  
+!pip install torch torchvision torchaudio --quiet
+!pip install scikit-learn matplotlib seaborn tqdm --quiet
+
+print("\n✅ All packages installed successfully!")
+
+# Verify installation
+print("\nVerifying pose estimation library...")
+if python_version.major == 3 and python_version.minor >= 11:
+    try:
+        from ultralytics import YOLO
+        print("✅ YOLOv8 (with pose estimation) installed successfully")
+        print("✅ Will use YOLOv8-Pose for skeleton extraction")
+    except Exception as e:
+        print(f"❌ YOLOv8 import error: {e}")
+else:
+    try:
+        import mediapipe as mp
+        print(f"✅ MediaPipe version: {mp.__version__}")
+        print(f"✅ MediaPipe solutions available: {hasattr(mp, 'solutions')}")
+    except Exception as e:
+        print(f"❌ MediaPipe import error: {e}")
+
+cell 2
+# Import libraries
+import os
+import sys
+import cv2
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+from tqdm.notebook import tqdm
+import json
+import time
+import warnings
+warnings.filterwarnings('ignore')
+
+# Conditional import: MediaPipe for Python 3.10, YOLOv8 for Python 3.11+
+python_version = sys.version_info
+USE_YOLO_POSE = python_version.major == 3 and python_version.minor >= 11
+
+if not USE_YOLO_POSE:
+    # MediaPipe for Python 3.10 and below
+    import mediapipe as mp
+    print("📦 Imported MediaPipe for pose estimation")
+else:
+    # YOLOv8 will be imported later in the SkeletonExtractor class
+    print("📦 Will use YOLOv8-Pose for pose estimation (Python 3.11+)")
+
+# PyTorch
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+
+# Scikit-learn
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score
+from sklearn.model_selection import train_test_split
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+
+# Device configuration
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"🚀 Using device: {device}")
+print(f"PyTorch version: {torch.__version__}")
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+cell 3
+# Configuration - UPDATED for combined datasets
+CONFIG = {
+    # Dataset paths (Kaggle) - RWF-2000
+    'RWF2000_PATH': '/kaggle/input/rwf2000/RWF-2000',
+    'RWF2000_TRAIN': '/kaggle/input/rwf2000/RWF-2000/train',
+    'RWF2000_VAL': '/kaggle/input/rwf2000/RWF-2000/val',
+    
+    # AIRTLab dataset paths
+    'AIRTLAB_PATH': '/kaggle/input/airtlab-violence-dataset/A-Dataset-for-Automatic-Violence-Detection/violence-detection-dataset',
+    
+    # Alternative: Local paths (uncomment if using local dataset)
+    # 'RWF2000_PATH': '../dataset/rwf2000',
+    # 'RWF2000_TRAIN': '../dataset/rwf2000/train',
+    # 'RWF2000_VAL': '../dataset/rwf2000/val',
+    # 'AIRTLAB_PATH': '../dataset/A-Dataset-for-Automatic-Violence-Detection-in-Videos-master/violence-detection-dataset',
+    
+    # Pose extraction
+    'NUM_KEYPOINTS': 33,  # MediaPipe Pose landmarks
+    'NUM_COORDS': 3,      # (x, y, visibility)
+    'SEQUENCE_LENGTH': 24, # UPDATED: Increased from 16 to 24 for better temporal context
+    'FRAME_STRIDE': 2,     # Skip frames for efficiency
+    
+    # Model hyperparameters
+    'HIDDEN_SIZE': 384,  # UPDATED: Increased from 256 to 384 for better model capacity
+    'NUM_LAYERS': 2,
+    'DROPOUT': 0.3,
+    'NUM_CLASSES': 2,
+    
+    # Training hyperparameters
+    'BATCH_SIZE': 32,
+    'LEARNING_RATE': 1e-3,
+    'EPOCHS': 30,
+    'WEIGHT_DECAY': 1e-5,
+    'EARLY_STOPPING_PATIENCE': 7,
+    
+    # Dataset combination strategy
+    'USE_AIRTLAB': True,  # Set to False to train only on RWF-2000
+    
+    # Output
+    'OUTPUT_DIR': './skeletal_violence_model',
+    'MODEL_SAVE_PATH': './skeletal_violence_model/best_skeleton_model.pth',
+    'RESULTS_PATH': './skeletal_violence_model/training_results.json'
+}
+
+# Create output directory
+os.makedirs(CONFIG['OUTPUT_DIR'], exist_ok=True)
+
+print("📋 Configuration loaded:")
+print("=" * 60)
+for key, value in CONFIG.items():
+    print(f"  {key}: {value}")
+print("=" * 60)
+
+cell 4
+# YOLOv8-Pose Skeleton Extractor
+print("🚀 Initializing YOLOv8-Pose skeleton extractor...")
+
+from ultralytics import YOLO
+
+class SkeletonExtractor:
+    """Extract skeletal keypoints using YOLOv8-Pose"""
+    
+    def __init__(self):
+        # Load YOLOv8 Pose model (will download on first use, ~6MB)
+        # Silent loading - no prints to avoid cluttering output during training
+        self.model = YOLO('yolov8n-pose.pt')
+    
+    def extract_keypoints(self, frame):
+        """Extract 17 COCO keypoints from a frame"""
+        results = self.model(frame, verbose=False)
+        
+        if len(results) > 0 and results[0].keypoints is not None:
+            keypoints = results[0].keypoints.xy.cpu().numpy()
+            if len(keypoints) > 0:
+                # Get first person's keypoints (17 keypoints, x,y coords)
+                kp = keypoints[0].flatten()  # Shape: (34,) for 17 keypoints
+                
+                # Add confidence scores as visibility
+                conf = results[0].keypoints.conf.cpu().numpy()[0] if results[0].keypoints.conf is not None else np.ones(17)
+                
+                # Create full feature vector: [x1,y1,conf1, x2,y2,conf2, ...]
+                full_kp = np.zeros(17 * 3, dtype=np.float32)
+                for i in range(17):
+                    if i * 2 + 1 < len(kp):
+                        full_kp[i*3] = kp[i*2] / 640.0      # Normalize x
+                        full_kp[i*3 + 1] = kp[i*2 + 1] / 640.0  # Normalize y
+                        full_kp[i*3 + 2] = conf[i] if i < len(conf) else 0.0
+                
+                # Pad to 99 to match expected input size (33 keypoints * 3)
+                padded = np.zeros(99, dtype=np.float32)
+                padded[:51] = full_kp
+                return padded
+        
+        return np.zeros(99, dtype=np.float32)
+    
+    def extract_from_video(self, video_path, num_frames=24, stride=2):
+        """Extract skeleton sequence from video"""
+        cap = cv2.VideoCapture(video_path)
+        
+        if not cap.isOpened():
+            return None
+        
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        if total_frames < num_frames * stride:
+            frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+        else:
+            start_idx = (total_frames - num_frames * stride) // 2
+            frame_indices = np.arange(start_idx, start_idx + num_frames * stride, stride)
+        
+        skeletons = []
+        
+        for frame_idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            
+            if ret:
+                skeleton = self.extract_keypoints(frame)
+                skeletons.append(skeleton)
+            else:
+                skeletons.append(np.zeros(99, dtype=np.float32))
+        
+        cap.release()
+        return np.array(skeletons, dtype=np.float32)
+
+print("✅ SkeletonExtractor class defined!")
+
+cell 5
+class CombinedViolenceDataset(Dataset):
+    """Combined Dataset for RWF-2000 and AIRTLab Violence Detection"""
+    
+    def __init__(self, rwf2000_path=None, airtlab_path=None, sequence_length=24, 
+                 stride=2, transform=None, cache_dir=None):
+        """
+        Args:
+            rwf2000_path: Path to RWF-2000 train/val folder (Fight/NonFight structure)
+            airtlab_path: Path to AIRTLab dataset root (violent/non-violent structure)
+            sequence_length: Number of frames per sequence
+            stride: Frame sampling stride
+            transform: Optional data augmentation
+            cache_dir: Directory to cache extracted skeletons
+        """
+        self.sequence_length = sequence_length
+        self.stride = stride
+        self.transform = transform
+        self.cache_dir = cache_dir
+        
+        # Create cache directory if specified
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
+        
+        self.video_paths = []
+        self.labels = []
+        
+        # Load RWF-2000 dataset
+        if rwf2000_path and os.path.exists(rwf2000_path):
+            print(f"📂 Loading RWF-2000 from: {rwf2000_path}")
+            rwf_videos, rwf_labels = self._load_rwf2000(rwf2000_path)
+            self.video_paths.extend(rwf_videos)
+            self.labels.extend(rwf_labels)
+            print(f"   ✅ RWF-2000: {len(rwf_videos)} videos")
+        
+        # Load AIRTLab dataset
+        if airtlab_path and os.path.exists(airtlab_path):
+            print(f"📂 Loading AIRTLab from: {airtlab_path}")
+            airtlab_videos, airtlab_labels = self._load_airtlab(airtlab_path)
+            self.video_paths.extend(airtlab_videos)
+            self.labels.extend(airtlab_labels)
+            print(f"   ✅ AIRTLab: {len(airtlab_videos)} videos")
+        
+        print(f"\n📊 Combined Dataset Statistics:")
+        print(f"   Total videos: {len(self.video_paths)}")
+        print(f"   Non-Violence: {sum(1 for l in self.labels if l == 0)}")
+        print(f"   Violence: {sum(1 for l in self.labels if l == 1)}")
+    
+    def _load_rwf2000(self, path):
+        """Load RWF-2000 dataset (Fight/NonFight structure)"""
+        videos = []
+        labels = []
+        
+        # Class mapping: NonFight=0, Fight=1
+        class_mapping = {'NonFight': 0, 'Fight': 1}
+        
+        for class_name, label in class_mapping.items():
+            class_path = os.path.join(path, class_name)
+            if os.path.exists(class_path):
+                video_files = [f for f in os.listdir(class_path) if f.endswith('.avi')]
+                for video in video_files:
+                    videos.append(os.path.join(class_path, video))
+                    labels.append(label)
+        
+        return videos, labels
+    
+    def _load_airtlab(self, path):
+        """Load AIRTLab dataset (violent/non-violent with cam1/cam2 structure)"""
+        videos = []
+        labels = []
+        
+        # Mapping: non-violent=0, violent=1
+        categories = {
+            'non-violent': 0,
+            'violent': 1
+        }
+        
+        for category, label in categories.items():
+            category_path = os.path.join(path, category)
+            if os.path.exists(category_path):
+                # AIRTLab has cam1 and cam2 subdirectories
+                for cam_dir in ['cam1', 'cam2']:
+                    cam_path = os.path.join(category_path, cam_dir)
+                    if os.path.exists(cam_path):
+                        # Find all video files recursively
+                        for root, dirs, files in os.walk(cam_path):
+                            for file in files:
+                                if file.endswith(('.avi', '.mp4', '.mov')):
+                                    videos.append(os.path.join(root, file))
+                                    labels.append(label)
+        
+        return videos, labels
+    
+    def __len__(self):
+        return len(self.video_paths)
+    
+    def _get_cache_path(self, idx):
+        """Get cache file path for a video"""
+        if self.cache_dir is None:
+            return None
+        # Create unique filename from full path
+        video_name = os.path.basename(self.video_paths[idx])
+        video_name = video_name.replace('.avi', '.npy').replace('.mp4', '.npy').replace('.mov', '.npy')
+        # Add parent folder to avoid name collisions
+        parent_folder = os.path.basename(os.path.dirname(self.video_paths[idx]))
+        cache_name = f"{parent_folder}_{video_name}"
+        return os.path.join(self.cache_dir, cache_name)
+    
+    def __getitem__(self, idx):
+        """Get skeleton sequence and label"""
+        
+        # Check cache first
+        cache_path = self._get_cache_path(idx)
+        if cache_path and os.path.exists(cache_path):
+            skeleton_sequence = np.load(cache_path)
+        else:
+            # Extract skeleton from video
+            extractor = SkeletonExtractor()
+            skeleton_sequence = extractor.extract_from_video(
+                self.video_paths[idx],
+                num_frames=self.sequence_length,
+                stride=self.stride
+            )
+            
+            # Save to cache
+            if cache_path and skeleton_sequence is not None:
+                np.save(cache_path, skeleton_sequence)
+        
+        # Handle extraction failure
+        if skeleton_sequence is None:
+            skeleton_sequence = np.zeros(
+                (self.sequence_length, CONFIG['NUM_KEYPOINTS'] * CONFIG['NUM_COORDS']),
+                dtype=np.float32
+            )
+        
+        # Apply transform if any
+        if self.transform:
+            skeleton_sequence = self.transform(skeleton_sequence)
+        
+        # Convert to tensor
+        skeleton_tensor = torch.tensor(skeleton_sequence, dtype=torch.float32)
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        
+        return skeleton_tensor, label
+
+print("✅ CombinedViolenceDataset class defined")
+
+cell 6
+class SkeletonViolenceModel(nn.Module):
+    """Skeleton-based Violence Detection Model with LSTM"""
+    
+    def __init__(self, num_keypoints=33, num_coords=3, hidden_size=256, num_layers=2, 
+                 num_classes=2, dropout=0.3):
+        """
+        Args:
+            num_keypoints: Number of skeletal keypoints (33 for MediaPipe)
+            num_coords: Number of coordinates per keypoint (x, y, visibility = 3)
+            hidden_size: LSTM hidden size
+            num_layers: Number of LSTM layers
+            num_classes: Number of output classes (2: Violence/Non-Violence)
+            dropout: Dropout rate
+        """
+        super(SkeletonViolenceModel, self).__init__()
+        
+        self.input_size = num_keypoints * num_coords  # 33 * 3 = 99
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        # Feature encoder for skeleton
+        self.encoder = nn.Sequential(
+            nn.Linear(self.input_size, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # LSTM for temporal modeling
+        self.lstm = nn.LSTM(
+            input_size=256,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size * 2, 128),  # *2 for bidirectional
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, num_classes)
+        )
+    
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, num_keypoints * num_coords)
+            
+        Returns:
+            Output logits of shape (batch_size, num_classes)
+        """
+        batch_size, seq_len, _ = x.size()
+        
+        # Encode each frame's skeleton
+        # Reshape: (batch * seq_len, input_size)
+        x_flat = x.view(batch_size * seq_len, -1)
+        encoded = self.encoder(x_flat)
+        
+        # Reshape back: (batch, seq_len, 256)
+        encoded = encoded.view(batch_size, seq_len, -1)
+        
+        # LSTM
+        lstm_out, (hidden, cell) = self.lstm(encoded)
+        
+        # Use last time step output
+        last_output = lstm_out[:, -1, :]
+        
+        # Classification
+        logits = self.classifier(last_output)
+        
+        return logits
+    
+    def get_num_params(self):
+        """Get number of trainable parameters"""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+# Initialize model
+model = SkeletonViolenceModel(
+    num_keypoints=CONFIG['NUM_KEYPOINTS'],
+    num_coords=CONFIG['NUM_COORDS'],
+    hidden_size=CONFIG['HIDDEN_SIZE'],
+    num_layers=CONFIG['NUM_LAYERS'],
+    num_classes=CONFIG['NUM_CLASSES'],
+    dropout=CONFIG['DROPOUT']
+).to(device)
+
+print("🏗️ Model Architecture:")
+print("=" * 60)
+print(model)
+print("=" * 60)
+print(f"📊 Total trainable parameters: {model.get_num_params():,}")
+
+cell 7
+# Create combined datasets with caching for faster loading
+print("📦 Creating combined datasets...\n")
+
+# Cache directories for faster loading
+train_cache_dir = os.path.join(CONFIG['OUTPUT_DIR'], 'cache_train')
+val_cache_dir = os.path.join(CONFIG['OUTPUT_DIR'], 'cache_val')
+
+# Training dataset: RWF-2000 train + AIRTLab (all videos)
+train_dataset = CombinedViolenceDataset(
+    rwf2000_path=CONFIG['RWF2000_TRAIN'],
+    airtlab_path=CONFIG['AIRTLAB_PATH'] if CONFIG['USE_AIRTLAB'] else None,
+    sequence_length=CONFIG['SEQUENCE_LENGTH'],
+    stride=CONFIG['FRAME_STRIDE'],
+    cache_dir=train_cache_dir
+)
+
+# Validation dataset: RWF-2000 val ONLY (for consistent benchmarking)
+val_dataset = CombinedViolenceDataset(
+    rwf2000_path=CONFIG['RWF2000_VAL'],
+    airtlab_path=None,  # Don't use AIRTLab for validation
+    sequence_length=CONFIG['SEQUENCE_LENGTH'],
+    stride=CONFIG['FRAME_STRIDE'],
+    cache_dir=val_cache_dir
+)
+
+# Create data loaders
+# Note: num_workers=0 to avoid CUDA multiprocessing issues with YOLOv8
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=CONFIG['BATCH_SIZE'],
+    shuffle=True,
+    num_workers=0,  # Single process to avoid CUDA fork issues
+    pin_memory=True if torch.cuda.is_available() else False
+)
+
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=CONFIG['BATCH_SIZE'],
+    shuffle=False,
+    num_workers=0,  # Single process to avoid CUDA fork issues
+    pin_memory=True if torch.cuda.is_available() else False
+)
+
+print(f"\n✅ Data loaders created")
+print(f"   Train batches: {len(train_loader)}")
+print(f"   Val batches: {len(val_loader)}")
+
+cell 8
+# Loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=CONFIG['LEARNING_RATE'],
+    weight_decay=CONFIG['WEIGHT_DECAY']
+)
+
+# Learning rate scheduler
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='max',
+    factor=0.5,
+    patience=3
+)
+
+# Training history
+history = {
+    'train_loss': [],
+    'train_acc': [],
+    'val_loss': [],
+    'val_acc': [],
+    'val_precision': [],
+    'val_recall': [],
+    'val_f1': [],
+    'learning_rate': []
+}
+
+# Best model tracking
+best_val_acc = 0.0
+best_epoch = 0
+patience_counter = 0
+
+print("✅ Training setup complete")
+
+cell 9
+def train_one_epoch(model, dataloader, criterion, optimizer, device):
+    """Train for one epoch"""
+    model.train()
+    
+    running_loss = 0.0
+    all_preds = []
+    all_labels = []
+    
+    pbar = tqdm(dataloader, desc='Training', leave=False)
+    
+    for skeletons, labels in pbar:
+        skeletons = skeletons.to(device)
+        labels = labels.to(device)
+        
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = model(skeletons)
+        loss = criterion(outputs, labels)
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        # Statistics
+        running_loss += loss.item() * skeletons.size(0)
+        _, preds = torch.max(outputs, 1)
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+        
+        # Update progress bar
+        pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+    
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_acc = accuracy_score(all_labels, all_preds) * 100
+    
+    return epoch_loss, epoch_acc
+
+def validate(model, dataloader, criterion, device):
+    """Validate the model"""
+    model.eval()
+    
+    running_loss = 0.0
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    
+    with torch.no_grad():
+        pbar = tqdm(dataloader, desc='Validation', leave=False)
+        
+        for skeletons, labels in pbar:
+            skeletons = skeletons.to(device)
+            labels = labels.to(device)
+            
+            # Forward pass
+            outputs = model(skeletons)
+            loss = criterion(outputs, labels)
+            
+            # Get probabilities
+            probs = F.softmax(outputs, dim=1)
+            
+            # Statistics
+            running_loss += loss.item() * skeletons.size(0)
+            _, preds = torch.max(outputs, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy()[:, 1])  # Probability of violence class
+            
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+    
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_acc = accuracy_score(all_labels, all_preds) * 100
+    epoch_precision = precision_score(all_labels, all_preds, zero_division=0) * 100
+    epoch_recall = recall_score(all_labels, all_preds, zero_division=0) * 100
+    epoch_f1 = f1_score(all_labels, all_preds, zero_division=0) * 100
+    
+    return epoch_loss, epoch_acc, epoch_precision, epoch_recall, epoch_f1, all_labels, all_preds, all_probs
+
+print("✅ Training functions defined")
+
+cell 10
+# Training loop
+print("🚀 Starting training with SEQUENCE_LENGTH=24...")
+print("=" * 70)
+
+start_time = time.time()
+
+for epoch in range(CONFIG['EPOCHS']):
+    epoch_start = time.time()
+    
+    # Train
+    train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    
+    # Validate
+    val_loss, val_acc, val_precision, val_recall, val_f1, val_labels, val_preds, val_probs = validate(
+        model, val_loader, criterion, device
+    )
+    
+    # Update learning rate
+    scheduler.step(val_acc)
+    current_lr = optimizer.param_groups[0]['lr']
+    
+    # Save history
+    history['train_loss'].append(train_loss)
+    history['train_acc'].append(train_acc)
+    history['val_loss'].append(val_loss)
+    history['val_acc'].append(val_acc)
+    history['val_precision'].append(val_precision)
+    history['val_recall'].append(val_recall)
+    history['val_f1'].append(val_f1)
+    history['learning_rate'].append(current_lr)
+    
+    # Print epoch results
+    epoch_time = time.time() - epoch_start
+    print(f"\nEpoch [{epoch+1}/{CONFIG['EPOCHS']}] - Time: {epoch_time:.2f}s")
+    print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+    print(f"  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+    print(f"  Val Precision: {val_precision:.2f}% | Val Recall: {val_recall:.2f}% | Val F1: {val_f1:.2f}%")
+    print(f"  Learning Rate: {current_lr:.6f}")
+    
+    # Save best model
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
+        best_epoch = epoch + 1
+        patience_counter = 0
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_acc': val_acc,
+            'history': history,
+            'config': CONFIG
+        }, CONFIG['MODEL_SAVE_PATH'])
+        
+        print(f"  ✅ New best model saved! (Val Acc: {val_acc:.2f}%)")
+    else:
+        patience_counter += 1
+        print(f"  ⏳ Patience: {patience_counter}/{CONFIG['EARLY_STOPPING_PATIENCE']}")
+    
+    # Early stopping
+    if patience_counter >= CONFIG['EARLY_STOPPING_PATIENCE']:
+        print(f"\n⚠️ Early stopping triggered at epoch {epoch+1}")
+        break
+    
+    print("-" * 70)
+
+total_time = time.time() - start_time
+print("\n" + "=" * 70)
+print(f"✅ Training completed!")
+print(f"   Total time: {total_time/60:.2f} minutes")
+print(f"   Best epoch: {best_epoch}")
+print(f"   Best validation accuracy: {best_val_acc:.2f}%")
+print("=" * 70)
+
+cell 11
+# Load best model
+print("📂 Loading best model...")
+checkpoint = torch.load(CONFIG['MODEL_SAVE_PATH'])
+model.load_state_dict(checkpoint['model_state_dict'])
+print(f"✅ Loaded model from epoch {checkpoint['epoch']+1}")
+
+# Final evaluation
+val_loss, val_acc, val_precision, val_recall, val_f1, val_labels, val_preds, val_probs = validate(
+    model, val_loader, criterion, device
+)
+
+# ROC AUC Score
+try:
+    roc_auc = roc_auc_score(val_labels, val_probs)
+except:
+    roc_auc = 0.0
+
+# Confusion matrix
+cm = confusion_matrix(val_labels, val_preds)
+
+# Classification report
+class_names = ['NonFight', 'Fight']
+report = classification_report(val_labels, val_preds, target_names=class_names, output_dict=True)
+
+# Print results
+print("\n" + "=" * 70)
+print("🎯 FINAL EVALUATION RESULTS (RWF-2000 Validation Set)")
+print("=" * 70)
+print(f"Accuracy: {val_acc:.2f}%")
+print(f"Precision: {val_precision:.2f}%")
+print(f"Recall: {val_recall:.2f}%")
+print(f"F1-Score: {val_f1:.2f}%")
+print(f"ROC AUC: {roc_auc:.4f}")
+print("\n" + "=" * 70)
+print("\nClassification Report:")
+print(classification_report(val_labels, val_preds, target_names=class_names))
+
+# Save results
+results = {
+    'best_epoch': best_epoch,
+    'best_val_acc': best_val_acc,
+    'final_metrics': {
+        'accuracy': val_acc,
+        'precision': val_precision,
+        'recall': val_recall,
+        'f1_score': val_f1,
+        'roc_auc': roc_auc
+    },
+    'confusion_matrix': cm.tolist(),
+    'classification_report': report,
+    'history': history,
+    'config': CONFIG,
+    'training_info': {
+        'sequence_length': CONFIG['SEQUENCE_LENGTH'],
+        'datasets_used': ['RWF-2000', 'AIRTLab'] if CONFIG['USE_AIRTLAB'] else ['RWF-2000'],
+        'total_training_videos': len(train_dataset),
+        'total_validation_videos': len(val_dataset)
+    }
+}
+
+with open(CONFIG['RESULTS_PATH'], 'w') as f:
+    json.dump(results, f, indent=2)
+
+print(f"✅ Results saved to {CONFIG['RESULTS_PATH']}")
+
+cell 12
+# Plot training history
+fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+# Loss
+axes[0, 0].plot(history['train_loss'], label='Train Loss', marker='o')
+axes[0, 0].plot(history['val_loss'], label='Val Loss', marker='s')
+axes[0, 0].set_title('Training & Validation Loss', fontsize=14, fontweight='bold')
+axes[0, 0].set_xlabel('Epoch')
+axes[0, 0].set_ylabel('Loss')
+axes[0, 0].legend()
+axes[0, 0].grid(True, alpha=0.3)
+
+# Accuracy
+axes[0, 1].plot(history['train_acc'], label='Train Accuracy', marker='o')
+axes[0, 1].plot(history['val_acc'], label='Val Accuracy', marker='s')
+axes[0, 1].axhline(y=best_val_acc, color='r', linestyle='--', label=f'Best: {best_val_acc:.2f}%')
+axes[0, 1].set_title('Training & Validation Accuracy', fontsize=14, fontweight='bold')
+axes[0, 1].set_xlabel('Epoch')
+axes[0, 1].set_ylabel('Accuracy (%)')
+axes[0, 1].legend()
+axes[0, 1].grid(True, alpha=0.3)
+
+# Precision, Recall, F1
+axes[1, 0].plot(history['val_precision'], label='Precision', marker='o')
+axes[1, 0].plot(history['val_recall'], label='Recall', marker='s')
+axes[1, 0].plot(history['val_f1'], label='F1-Score', marker='^')
+axes[1, 0].set_title('Validation Metrics', fontsize=14, fontweight='bold')
+axes[1, 0].set_xlabel('Epoch')
+axes[1, 0].set_ylabel('Score (%)')
+axes[1, 0].legend()
+axes[1, 0].grid(True, alpha=0.3)
+
+# Learning Rate
+axes[1, 1].plot(history['learning_rate'], marker='o', color='green')
+axes[1, 1].set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+axes[1, 1].set_xlabel('Epoch')
+axes[1, 1].set_ylabel('Learning Rate')
+axes[1, 1].set_yscale('log')
+axes[1, 1].grid(True, alpha=0.3)
+
+plt.suptitle(f'Training with SEQUENCE_LENGTH={CONFIG["SEQUENCE_LENGTH"]}', fontsize=16, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.savefig(os.path.join(CONFIG['OUTPUT_DIR'], 'training_history.png'), dpi=150, bbox_inches='tight')
+plt.show()
+
+print("✅ Training history plotted")
+
+cell 13
+# Plot confusion matrix
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+plt.title(f'Confusion Matrix (SEQUENCE_LENGTH={CONFIG["SEQUENCE_LENGTH"]})', fontsize=16, fontweight='bold')
+plt.ylabel('True Label', fontsize=12)
+plt.xlabel('Predicted Label', fontsize=12)
+
+# Add accuracy metrics
+datasets_info = 'RWF-2000 + AIRTLab' if CONFIG['USE_AIRTLAB'] else 'RWF-2000'
+plt.text(0.5, -0.15, f'Trained on: {datasets_info} | Accuracy: {val_acc:.2f}% | Precision: {val_precision:.2f}% | Recall: {val_recall:.2f}% | F1: {val_f1:.2f}%', 
+         ha='center', va='top', transform=plt.gca().transAxes, fontsize=11)
+
+plt.tight_layout()
+plt.savefig(os.path.join(CONFIG['OUTPUT_DIR'], 'confusion_matrix.png'), dpi=150, bbox_inches='tight')
+plt.show()
+
+print("✅ Confusion matrix plotted")

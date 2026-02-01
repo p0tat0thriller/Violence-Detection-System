@@ -32,10 +32,10 @@ from skeleton_extractor import SkeletonExtractor
 # Use relative path from script location
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_script_dir)
-VIDEO_SOURCE = os.path.join(_project_root, "testing", "f3.avi")
+VIDEO_SOURCE = os.path.join(_project_root, "testing", "nf3.avi")
 
 # MODEL CONFIG
-SEQUENCE_LENGTH = 16            # Number of frames for LSTM
+SEQUENCE_LENGTH = 24            # Number of frames for LSTM (increased for better temporal context)
 CONFIDENCE_THRESHOLD = 0.60   # Violence detection threshold (0-1)
                                 # 0.60 = Balanced (80% recall, 60% accuracy)
                                 # 0.70 = Fewer false alarms (75% precision, low recall)
@@ -46,7 +46,7 @@ FRAME_STRIDE = 2                # Sample every Nth frame for sequence
 # DETECTION THRESHOLDS
 MOTION_THRESHOLD = 3.0          # Minimum motion to trigger inference
 PERSON_CONFIDENCE = 0.45        # YOLOv8 person detection confidence
-TEMPORAL_SMOOTHING = 10         # Number of predictions to smooth (increased from 5)
+TEMPORAL_SMOOTHING = 5          # Number of predictions to smooth for stability
 MIN_PERSON_COUNT = 1            # Minimum people for violence check
 CONFIDENCE_MARGIN = 0.10        # Require score > threshold + margin for positive
 
@@ -153,7 +153,7 @@ def main():
     model = SkeletonViolenceModel(
         num_keypoints=33,
         num_coords=3,
-        hidden_size=256,
+        hidden_size=384,
         num_layers=2,
         num_classes=2,
         dropout=0.3
@@ -287,8 +287,12 @@ def main():
                         # Add to prediction history for temporal smoothing
                         prediction_history.append(current_prediction)
                         
-                        # Calculate smoothed prediction with confidence margin
-                        violence_score = np.mean(prediction_history)
+                        # Calculate smoothed prediction - weight recent predictions more heavily
+                        if len(prediction_history) > 1:
+                            # 70% current prediction, 30% historical average
+                            violence_score = current_prediction * 0.7 + np.mean(list(prediction_history)[:-1]) * 0.3
+                        else:
+                            violence_score = current_prediction
                         
                         # Adjust threshold based on person count and add margin
                         adjusted_threshold = CONFIDENCE_THRESHOLD + CONFIDENCE_MARGIN

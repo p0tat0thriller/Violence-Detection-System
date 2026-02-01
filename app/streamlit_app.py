@@ -98,7 +98,7 @@ def load_models():
             model = SkeletonViolenceModel(
                 num_keypoints=33,
                 num_coords=3,
-                hidden_size=256,
+                hidden_size=384,
                 num_layers=2,
                 num_classes=2,
                 dropout=0.3
@@ -318,7 +318,7 @@ def main():
     
     # Model settings
     st.sidebar.subheader("Model Parameters")
-    sequence_length = st.sidebar.slider("Sequence Length", 8, 32, 16, help="Number of frames for LSTM")
+    sequence_length = st.sidebar.slider("Sequence Length", 8, 32, 24, help="Number of frames for LSTM")
     confidence_threshold = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.60, 0.05, help="Violence detection threshold")
     temporal_smoothing = st.sidebar.slider("Temporal Smoothing", 5, 20, 10, help="Smoothing window size")
     

@@ -5,9 +5,10 @@
 A privacy-preserving violence detection system using skeletal pose estimation and LSTM networks.
 
 ### Performance
-- **Accuracy**: 70.5%
+- **Accuracy**: 70.5% (RWF-2000 validation)
 - **Violence Recall**: 87% (excellent at catching violent behavior)
-- **Model Size**: ~1M parameters (25x smaller than ResNet50+LSTM)
+- **Model Size**: ~2.4M parameters (384 hidden units, 2 layers)
+- **Training Data**: RWF-2000 + AIRTLab (~2,350 videos)
 - **Approach**: Motion-based (skeletal keypoints) instead of appearance-based
 
 ## 🏗️ Architecture
@@ -15,11 +16,11 @@ A privacy-preserving violence detection system using skeletal pose estimation an
 ```
 Video Frame → YOLOv8-Pose → Skeleton (17 keypoints)
                 ↓
-          Feature Encoder (99 → 256)
+          Feature Encoder (99 → 512 → 256)
                 ↓
-        Bidirectional LSTM (2 layers)
+        Bidirectional LSTM (384 hidden, 2 layers)
                 ↓
-          Classifier (Violence/Normal)
+          Classifier (768 → 128 → 2)
 ```
 
 ## 🚀 Quick Start
@@ -32,15 +33,20 @@ pip install -r requirements.txt
 
 ### 2. Run Violence Detection
 
+**Option A: Local Video Processing (OpenCV)**
 ```bash
-# Activate virtual environment (if using)
-source venv/Scripts/activate  # Windows
-# source venv/bin/activate     # Linux/Mac
-
-# Run on video file
 cd app
 python main_skeletal.py
 ```
+
+**Option B: Web Interface (Streamlit)**
+```bash
+cd app
+streamlit run streamlit_app.py
+```
+- Upload video files or use webcam
+- Real-time detection with on-screen overlays
+- Adjustable confidence threshold and settings
 
 ### 3. Configure Video Source
 
@@ -55,28 +61,24 @@ VIDEO_SOURCE = r"path/to/your/video.mp4"
 ```
 Violence-Detection-System/
 ├── app/
-│   ├── main_skeletal.py          # 🌟 Main inference script (NEW)
-│   ├── model.py                  # 🌟 Skeletal LSTM model (NEW)
-│   ├── skeleton_extractor.py    # 🌟 YOLOv8-Pose extractor (NEW)
+│   ├── main_skeletal.py          # 🌟 Local inference (OpenCV)
+│   ├── streamlit_app.py          # 🌟 Web UI (Streamlit)
+│   ├── skeleton_model.py         # 🌟 BiLSTM model (384 hidden)
+│   ├── skeleton_extractor.py    # 🌟 YOLOv8-Pose extractor
 │   ├── yolov8n.pt               # YOLOv8 person detection
-│   ├── yolov8n-pose.pt          # 🌟 YOLOv8-Pose model (NEW)
+│   ├── yolov8n-pose.pt          # 🌟 YOLOv8-Pose model
 │   └── ...
 │
 ├── weights/
-│   └── best_skeleton_model.pth  # 🌟 Trained model (70.5% accuracy)
+│   └── best_skeleton_model.pth  # 🌟 Trained model (384 hidden, 24 seq)
 │
 ├── training/
-│   └── skeletal_violence_detection_rwf2000.ipynb  # Training notebook
-│
-├── Output/
-│   ├── training_results.json    # Training metrics
-│   ├── confusion_matrix.png     # Performance visualization
-│   └── training_history.png     # Training curves
+│   └── training_script.txt      # Kaggle training script (RWF-2000 + AIRTLab)
 │
 ├── archive/
 │   └── old_resnet_lstm/         # Old ResNet50+LSTM model (50% accuracy)
 │
-└── README.md
+└── README_SKELETAL.md
 ```
 
 ## 🔧 Configuration
@@ -84,13 +86,15 @@ Violence-Detection-System/
 ### Model Parameters (in `main_skeletal.py`):
 
 ```python
-SEQUENCE_LENGTH = 16          # Number of frames for LSTM
-CONFIDENCE_THRESHOLD = 0.65   # Violence detection threshold (0-1)
-SKIP_INFERENCE = 3            # Run AI every N frames
+SEQUENCE_LENGTH = 24          # Number of frames for LSTM (increased from 16)
+HIDDEN_SIZE = 384             # LSTM hidden units (increased from 256)
+CONFIDENCE_THRESHOLD = 0.60   # Violence detection threshold (0-1)
+CONFIDENCE_MARGIN = 0.10      # Additional threshold buffer
+SKIP_INFERENCE = 5            # Run AI every N frames
 FRAME_STRIDE = 2              # Sample every Nth frame
 MOTION_THRESHOLD = 3.0        # Minimum motion to trigger
 PERSON_CONFIDENCE = 0.45      # Person detection confidence
-TEMPORAL_SMOOTHING = 5        # Predictions to smooth
+TEMPORAL_SMOOTHING = 5        # Predictions to smooth (weighted averaging)
 ```
 
 ## 📊 Model Comparison
@@ -116,9 +120,10 @@ TEMPORAL_SMOOTHING = 5        # Predictions to smooth
    - 2-layer MLP: 99 → 512 → 256
    
 3. **Temporal Modeling** (Bidirectional LSTM)
-   - Processes 16-frame sequences
-   - 2 layers, 256 hidden units
+   - Processes 24-frame sequences (improved temporal context)
+   - 2 layers, 384 hidden units (increased capacity)
    - Looks at past AND future frames
+   - Weighted temporal smoothing (70% current, 30% history)
    
 4. **Classification**
    - Binary output: Violence / Non-Violence
@@ -142,9 +147,13 @@ Unlike appearance-based models (ResNet50), this skeletal approach:
 
 ## 📈 Training Details
 
-- **Dataset**: RWF-2000 (2,000 real-world fight videos)
-- **Training Time**: ~18 minutes on GPU
-- **Epochs**: 19 (early stopping at epoch 12)
+- **Datasets**: 
+  - RWF-2000: ~2,000 real-world fight videos (train + val)
+  - AIRTLab: 350 videos (230 violent, 120 non-violent)
+  - Total: ~2,350 training videos
+- **Training**: Kaggle GPU (P100/T4)
+- **Validation**: RWF-2000 validation set (consistent benchmarking)
+- **Architecture**: 384 hidden units, 24 sequence length
 - **Best F1-Score**: 74.68%
 - **ROC AUC**: 0.68
 

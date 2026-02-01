@@ -48,29 +48,6 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 0.5rem 0;
     }
-    .violence-alert {
-        background-color: #ff4b4b;
-        color: white;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        text-align: center;
-        font-size: 1.5rem;
-        font-weight: bold;
-        animation: pulse 1s infinite;
-    }
-    .normal-status {
-        background-color: #00cc66;
-        color: white;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        text-align: center;
-        font-size: 1.5rem;
-        font-weight: bold;
-    }
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -173,11 +150,10 @@ def process_video(video_source, skeleton_extractor, yolo, model, model_loaded, d
     prev_gray = None
     
     # Streamlit placeholders - create containers that stay in place
-    status_placeholder = st.empty()
     video_placeholder = st.empty()
     
-    metrics_container = st.container()
-    with metrics_container:
+    # Detailed metrics in expandable section
+    with st.expander("📊 Detailed Metrics", expanded=False):
         metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
         metric1_placeholder = metrics_col1.empty()
         metric2_placeholder = metrics_col2.empty()
@@ -198,6 +174,7 @@ def process_video(video_source, skeleton_extractor, yolo, model, model_loaded, d
     
     # Display variables
     status_text = "Initializing..."
+    status_color = (200, 200, 200)  # Gray
     violence_score = 0.0
     person_count = 0
     
@@ -246,7 +223,7 @@ def process_video(video_source, skeleton_extractor, yolo, model, model_loaded, d
         if len(skeleton_queue) == settings['sequence_length'] and frame_count % 5 == 0:  # SKIP_INFERENCE = 5
             if motion_score < settings['motion_threshold'] and person_count < 1:
                 status_text = "Static Scene"
-                status_color = "gray"
+                status_color = (128, 128, 128)  # Gray
             else:
                 # Prepare sequence and run inference
                 sequence = torch.stack(list(skeleton_queue)).unsqueeze(0).to(device)
@@ -267,19 +244,33 @@ def process_video(video_source, skeleton_extractor, yolo, model, model_loaded, d
                     
                     # Determine status
                     if violence_score > adjusted_threshold:
-                        status_text = f"⚠️ VIOLENCE DETECTED ({violence_score:.0%})"
-                        status_color = "red"
+                        status_text = f"VIOLENCE DETECTED ({violence_score:.0%})"
+                        status_color = (0, 0, 255)  # Red in BGR
                     else:
-                        status_text = f"✓ Normal Activity ({violence_score:.0%})"
-                        status_color = "green"
+                        status_text = f"Normal Activity ({violence_score:.0%})"
+                        status_color = (0, 255, 0)  # Green in BGR
         
-        # Update status (at the top)
-        if "VIOLENCE" in status_text:
-            status_placeholder.markdown(f'<div class="violence-alert">{status_text}</div>', unsafe_allow_html=True)
-        else:
-            status_placeholder.markdown(f'<div class="normal-status">{status_text}</div>', unsafe_allow_html=True)
+        # Draw overlay panel with text (like local version)
+        # Create semi-transparent black panel at top
+        overlay = output_frame.copy()
+        cv2.rectangle(overlay, (10, 10), (700, 120), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, output_frame, 0.3, 0, output_frame)
         
-        # Display frame
+        # Main status text
+        cv2.putText(output_frame, status_text, (20, 45), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, status_color, 2)
+        
+        # Debug info line 1
+        debug_line1 = f"Frame: {frame_count} | People: {person_count} | Motion: {motion_score:.1f}"
+        cv2.putText(output_frame, debug_line1, (20, 75), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # Debug info line 2
+        debug_line2 = f"AI Score: {violence_score:.3f} | Threshold: {settings['confidence_threshold']:.1f}"
+        cv2.putText(output_frame, debug_line2, (20, 100), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # Convert to RGB for display
         output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
         video_placeholder.image(output_frame, channels="RGB", use_container_width=True)
         

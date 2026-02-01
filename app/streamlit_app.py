@@ -310,7 +310,7 @@ def main():
     # Model settings
     st.sidebar.subheader("Model Parameters")
     sequence_length = st.sidebar.slider("Sequence Length", 8, 32, 24, help="Number of frames for LSTM")
-    confidence_threshold = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.60, 0.05, help="Violence detection threshold")
+    confidence_threshold = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.55, 0.05, help="Violence detection threshold")
     temporal_smoothing = st.sidebar.slider("Temporal Smoothing", 5, 20, 10, help="Smoothing window size")
     
     # Detection settings
@@ -338,7 +338,7 @@ def main():
     st.sidebar.success(f"✅ Models loaded on {device}")
     
     # Main content
-    tab1, tab2 = st.tabs(["📹 Upload Video", "🎥 Live Webcam"])
+    tab1, tab2 = st.tabs(["Upload Video", "Live Webcam"])
     
     with tab1:
         st.header("Upload Video for Analysis")
@@ -356,7 +356,6 @@ def main():
     
     with tab2:
         st.header("Live Webcam Feed")
-        st.info("🚧 Webcam support coming soon!")
         
         camera_index = st.number_input("Camera Index", min_value=0, max_value=10, value=0)
         
